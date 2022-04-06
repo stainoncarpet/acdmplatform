@@ -20,7 +20,7 @@ contract ACDMPlatform is Ownable {
 
     struct Order { OrderType otype; }
 
-    event RoundStarted(string indexed mode, uint256 indexed timestamp, uint256 indexed price);
+    event RoundStarted(string indexed mode,uint256 indexed price);
 
     address public immutable TOKEN;
     uint256 public immutable ROUND_TIME;
@@ -34,22 +34,26 @@ contract ACDMPlatform is Ownable {
     }
 
     modifier onlyDuringSale() {
-        Round memory round = rounds[rounds.length - 1];
-        require(!round.hasEnded, "Round has ended");
-        require(round.mode == RoundMode.SALE, "Allowed only during sale periods");
+        if(rounds.length > 0) {
+            Round memory round = rounds[rounds.length - 1];
+            require(!round.hasEnded, "Round has ended");
+            require(round.mode == RoundMode.SALE, "Allowed only during sale periods");
+        }
         _;
     }
 
     modifier onlyDuringTrade() {
-        Round memory round = rounds[rounds.length - 1];
-        require(!round.hasEnded, "Round has ended");
-        require(round.mode == RoundMode.TRADE || rounds.length == 0, "Allowed only during trading periods");
+        if(rounds.length > 0) {
+            Round memory round = rounds[rounds.length - 1];
+            require(!round.hasEnded, "Round has ended");
+            require(round.mode == RoundMode.TRADE || rounds.length == 0, "Allowed only during trading periods");
+        }
         _;
     }
 
     function register(address referrer) external {
         require(!isRegistered[msg.sender], "Already registered");
-        require(msg.sender != referrer, "One can't register oneself as referrer");
+        require(msg.sender != referrer, "Can't register oneself as referrer");
 
         if(referrer == address(0)) {
             isRegistered[msg.sender] = true;
@@ -82,7 +86,7 @@ contract ACDMPlatform is Ownable {
         });
         rounds.push(newRound);
 
-        emit RoundStarted("test", newRound.startedAt, newRound.price);
+        emit RoundStarted("Sale", newRound.price);
     }
 
     // нужно использовать модификатор noreentrancy
@@ -91,7 +95,7 @@ contract ACDMPlatform is Ownable {
 
         Round storage currentRound = rounds[rounds.length - 1];
 
-        uint256 fullAmountToBuy = msg.value / currentRound.price;
+        uint256 fullAmountToBuy = msg.value / currentRound.price * 10**18;
         uint256 lastAvailableAmount = currentRound.volumeAvailable - currentRound.volumeTransacted;
 
         if(lastAvailableAmount > fullAmountToBuy) {
@@ -110,11 +114,11 @@ contract ACDMPlatform is Ownable {
         }
 
         address[] memory refs = referrersOf[msg.sender];
-        if(refs[0] != address(0)) {
-            payable(refs[0]).transfer(msg.value * 5 / 100);
-        }
 
-        if(refs[1] != address(0)) {
+        if(refs.length == 1) {
+            payable(refs[0]).transfer(msg.value * 5 / 100);
+        } else if (refs.length == 2) {
+            payable(refs[0]).transfer(msg.value * 5 / 100);
             payable(refs[1]).transfer(msg.value * 3 / 100);
         }
     }
