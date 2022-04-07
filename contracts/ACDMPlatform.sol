@@ -4,12 +4,15 @@ pragma solidity >=0.8.12 <0.9.0;
 
 import "hardhat/console.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract ACDMPlatform is Ownable {
+contract ACDMPlatform is Ownable, ReentrancyGuard {
     event RoundStarted(string indexed mode, uint256 indexed price);
     event RoundEnded(string indexed mode, uint256 indexed price);
     event TokenBought(address indexed buyer, uint256 indexed amount);
     event OrderAdded(string indexed otype, uint256 indexed amount, uint256 indexed price);
+    event OrderRemoved(string indexed otype, uint256 indexed amount, uint256 indexed price);
+    event OrderRedeemed(string indexed otype, uint256 indexed amount, uint256 indexed price);
 
     struct PlatformSaleRound {
         uint256 startedAt;
@@ -28,7 +31,7 @@ contract ACDMPlatform is Ownable {
     struct UserOrder {
         bool isSell;
         bool isActive;
-        address seller;
+        address creator;
         uint256 amount;
         uint256 price;
     }
@@ -64,13 +67,14 @@ contract ACDMPlatform is Ownable {
     }
 
     modifier onlyAfterStart() {
-        require(roundCount != 0, "This action is possible only after first sale round");
+        require(roundCount != 0, "This action is possible only after first sale round start");
         _;
     }
 
     function register(address referrer) external {
         require(!isRegistered[msg.sender], "Already registered");
         require(msg.sender != referrer, "Can't register oneself as referrer");
+        require(referrersOf[referrer].length > 0 ? referrersOf[referrer][0] != msg.sender : true);
 
         if(referrer == address(0)) {
             isRegistered[msg.sender] = true;
@@ -106,7 +110,7 @@ contract ACDMPlatform is Ownable {
     }
 
     // нужно использовать модификатор noreentrancy
-    function buyACDM() external onlyDuring("sale", 1) onlyAfterStart payable {
+    function buyACDM() external payable onlyDuring("sale", 1) onlyAfterStart nonReentrant {
         require(msg.value > 0, "Value is 0");
 
         PlatformSaleRound storage round = saleRounds[roundCount - 1];
@@ -173,10 +177,21 @@ contract ACDMPlatform is Ownable {
     }
 
     // если ордер никто не купил и он не отменился: то токены должны перейти на след раунд, изначальная цена остается
-    function addOrder(bool isSell, uint256 amount, uint256 price) external onlyDuring("trade", 1) {
+    function addOrder(bool isSell, uint256 amount, uint256 price) external payable onlyDuring("trade", 1) nonReentrant {
+        bool success;
+
+        if(!isSell) {
+            success = msg.value / (amount * price / 10**18) >= 1;
+            if (!success) { payable(msg.sender).transfer(msg.value); }
+        } else {
+            (success,) = TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount));
+        }
+        
+        require(success, "Failed to place order");
+        
         UserOrder memory newOrder = UserOrder({
             isSell: isSell,
-            seller: msg.sender,
+            creator: msg.sender,
             amount: amount,
             price: price,
             isActive: true
@@ -189,15 +204,48 @@ contract ACDMPlatform is Ownable {
 
     function removeOrder(uint256 id) external onlyDuring("trade", 1) {
         UserOrder[] storage orders = tradeOrders[roundCount - 1];
+
         require(id < orders.length, "Order with specified id doesn't exist");
-        require(orders[id].seller == msg.sender, "Only creator can cancel order");
+        require(orders[id].creator == msg.sender, "Only creator can cancel order");
+
+        bool success;
+
+        if(!orders[id].isSell) {
+            uint256 ethToReturn = orders[id].amount * orders[id].price / 10**18;
+            payable(orders[id].creator).transfer(ethToReturn);
+            success = true;
+        } else {
+            (success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, orders[id].amount));
+        }
+        
+        require(success, "Failed to cancel order");
         orders[id].isActive = false;
+        emit OrderRemoved(orders[id].isSell ? "Sell" : "Buy", orders[id].amount, orders[id].price);
     }
 
     // // можно выкупить частично
-    // function redeemOrder(uint256 id) external payable onlyDuring("trade", 1) {
+    function redeemOrder(uint256 id, uint256 amount) external payable onlyDuring("trade", 1) nonReentrant {
+        UserOrder[] storage orders = tradeOrders[roundCount - 1];
 
-    // }
+        require(id < orders.length, "Order with specified id doesn't exist");
+        require(orders[id].isActive, "Order is no longer active");
+
+        if(orders[id].isSell) {
+            // caller is buying tokens with eth
+            require(msg.value > 0);
+        } else {
+            // caller is selling tokens for eth
+            TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", arg));
+        }
+
+        // bool isSell;
+        // bool isActive;
+        // address creator;
+        // uint256 amount;
+        // uint256 price;
+
+        emit OrderRedeemed("Buy", orders[id].amount, orders[id].price);
+    }
 
     // qty of sold t0kens is determined by volume of previous round / new price 
     function getSaleRoundVolume(uint256 newPrice) private view returns(uint256) {

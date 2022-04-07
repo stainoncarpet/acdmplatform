@@ -1,3 +1,4 @@
+/* eslint-disable no-undef */
 /* eslint-disable no-unused-expressions */
 /* eslint-disable spaced-comment */
 /* eslint-disable no-unused-vars */
@@ -7,12 +8,12 @@
 
 import { expect } from "chai";
 import { ethers, network, waffle } from "hardhat";
-import { ACDMPlatform } from "../typechain";
+import { ACDMPlatform, ACDMToken } from "../typechain";
 
 const pe = ethers.utils.parseEther;
 
 describe("ACDM", () => {
-  let ACDMToken, acdmToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
+  let ACDMToken, acdmToken: ACDMToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
   let signers, deployer, user1: any, user2: any, user3: any, user4: any;
 
   beforeEach(async () => {
@@ -111,7 +112,7 @@ describe("ACDM", () => {
 
   it("Should start and conduct trade round (without referrers)", async () => {
     await expect(acdmPlatform.startTradeRound())
-    .to.be.revertedWith("This action is possible only after first sale round")
+    .to.be.revertedWith("This action is possible only after first sale round start")
     ;
 
     await expect(acdmPlatform.startSaleRound())
@@ -126,6 +127,8 @@ describe("ACDM", () => {
     .withArgs("Trade", 0)
     ;
 
+    await acdmToken.connect(user1).approve(acdmPlatform.address, pe("1000"));
+
     await expect(
       acdmPlatform
         .connect(user1)
@@ -134,6 +137,23 @@ describe("ACDM", () => {
     .to.emit(acdmPlatform, "OrderAdded")
     .withArgs("Sell", pe("1000"), pe("0.00002"))
   
-      console.log(await acdmPlatform.tradeOrders(1, 0))
+    await expect(
+      acdmPlatform
+        .connect(user2)
+        .addOrder(false, pe("100000"), pe("0.00001"), { value: pe("1") })
+    )
+    .to.emit(acdmPlatform, "OrderAdded")
+    .withArgs("Buy", pe("100000"), pe("0.00001"))
+    ;
+
+    await expect(acdmPlatform.connect(user2).removeOrder(0))
+    .to.be.revertedWith("Only creator can cancel order")
+    ;
+
+    await expect(acdmPlatform.connect(user2).removeOrder(1))
+    .to.emit(acdmPlatform, "OrderRemoved")
+    .withArgs("Buy", pe("100000"), pe("0.00001"))
+    ;
   });
 });
+
