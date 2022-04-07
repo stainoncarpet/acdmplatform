@@ -6,48 +6,65 @@ import "hardhat/console.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ACDMPlatform is Ownable {
-    enum RoundMode { NONE, SALE, TRADE }
-    enum OrderType { NONE, SELL, BUY }
+    event RoundStarted(string indexed mode, uint256 indexed price);
+    event RoundEnded(string indexed mode, uint256 indexed price);
+    event TokenBought(address indexed buyer, uint256 indexed amount);
+    event OrderAdded(string indexed otype, uint256 indexed amount, uint256 indexed price);
 
-    struct Round { 
-        RoundMode mode;
-        uint256 startedAt; 
+    struct PlatformSaleRound {
+        uint256 startedAt;
         uint256 price; 
         uint256 volumeAvailable; 
-        uint256 volumeTransacted; 
+        uint256 volumeTransacted;
         bool hasEnded;
     }
 
-    struct Order { OrderType otype; }
+    struct PlatformTradeRound {
+        uint256 startedAt;
+        uint256 volumeTransacted;
+        bool hasEnded;
+    }
 
-    event RoundStarted(string indexed mode,uint256 indexed price);
+    struct UserOrder {
+        bool isSell;
+        bool isActive;
+        address seller;
+        uint256 amount;
+        uint256 price;
+    }
 
     address public immutable TOKEN;
     uint256 public immutable ROUND_TIME;
+    uint256 public roundCount;
     mapping(address => address[]) public referrersOf; // item0 - direct referrer, item1 - referrer of referrer
     mapping(address => bool) public isRegistered;
-    Round[] public rounds;
+    mapping(uint256 => PlatformSaleRound) public saleRounds;
+    mapping(uint256 => PlatformTradeRound) public tradeRounds;
+    mapping(uint256 => UserOrder[]) public tradeOrders;
 
     constructor(address token, uint256 roundTime) {
         TOKEN = token;
         ROUND_TIME = roundTime;
     }
 
-    modifier onlyDuringSale() {
-        if(rounds.length > 0) {
-            Round memory round = rounds[rounds.length - 1];
-            require(!round.hasEnded, "Round has ended");
-            require(round.mode == RoundMode.SALE, "Allowed only during sale periods");
+    // offset 0 = before creating new entity, offset 1 = after creating new antity
+    modifier onlyDuring(bytes32 what, uint8 offset) {
+        bool isSaleRoundCurrent = (roundCount - offset) % 2 == 0;
+
+        if(roundCount > offset) {
+            require(isSaleRoundCurrent ? !saleRounds[roundCount].hasEnded : !tradeRounds[roundCount].hasEnded, "Round has ended");
+        }
+
+        if(what == "sale" && offset == 1) {
+            require(isSaleRoundCurrent, "Allowed only during sale periods");
+        } else if(what == "trade" && offset == 1) {
+            require(!isSaleRoundCurrent, "Allowed only during trade periods");
         }
         _;
     }
 
-    modifier onlyDuringTrade() {
-        if(rounds.length > 0) {
-            Round memory round = rounds[rounds.length - 1];
-            require(!round.hasEnded, "Round has ended");
-            require(round.mode == RoundMode.TRADE || rounds.length == 0, "Allowed only during trading periods");
-        }
+    modifier onlyAfterStart() {
+        require(roundCount != 0, "This action is possible only after first sale round");
         _;
     }
 
@@ -69,48 +86,52 @@ contract ACDMPlatform is Ownable {
     }
 
     // SALE
-    // в начале sale-раунда мы минтим необходимую сумму токенов на контракт
-    function startSaleRound() external onlyDuringTrade onlyOwner {
-        uint256 newPrice = getNewPrice();
-        uint256 mintedAmount = getVolumeAvailable(newPrice);
+    function startSaleRound() external onlyDuring("trade", 0) onlyOwner {
+        uint256 newPrice = getNewSaleRoundPrice();
+        uint256 amountToMint = getSaleRoundVolume(newPrice);
 
-        TOKEN.call(abi.encodeWithSignature("mint(uint256)", mintedAmount));
+        TOKEN.call(abi.encodeWithSignature("mint(uint256)", amountToMint));
 
-        Round memory newRound = Round({
-            mode: RoundMode.SALE,
+        PlatformSaleRound memory newRound = PlatformSaleRound({
             startedAt: block.timestamp,
             price: newPrice,
-            volumeAvailable: mintedAmount,
+            volumeAvailable: amountToMint,
             volumeTransacted: 0,
             hasEnded: false
         });
-        rounds.push(newRound);
+
+        saleRounds[roundCount++] = newRound;
 
         emit RoundStarted("Sale", newRound.price);
     }
 
     // нужно использовать модификатор noreentrancy
-    function buyACDM() external payable onlyDuringSale {
+    function buyACDM() external onlyDuring("sale", 1) onlyAfterStart payable {
         require(msg.value > 0, "Value is 0");
 
-        Round storage currentRound = rounds[rounds.length - 1];
+        PlatformSaleRound storage round = saleRounds[roundCount - 1];
 
-        uint256 fullAmountToBuy = msg.value / currentRound.price * 10**18;
-        uint256 lastAvailableAmount = currentRound.volumeAvailable - currentRound.volumeTransacted;
+        uint256 fullAmountToBuy = msg.value / round.price * 10**18;
+        uint256 lastAvailableAmount = round.volumeAvailable - round.volumeTransacted;
 
         if(lastAvailableAmount > fullAmountToBuy) {
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, fullAmountToBuy));
-            currentRound.volumeTransacted += fullAmountToBuy;
+            round.volumeTransacted += fullAmountToBuy;
+            emit TokenBought(msg.sender, fullAmountToBuy);
         } else if (lastAvailableAmount == fullAmountToBuy) {
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, fullAmountToBuy));
-            currentRound.volumeTransacted = currentRound.volumeAvailable;
-            currentRound.hasEnded = true;
+            round.volumeTransacted = round.volumeAvailable;
+            round.hasEnded = true;
+            emit RoundEnded("Sale", round.price);
+            emit TokenBought(msg.sender, fullAmountToBuy);
         } else {
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, lastAvailableAmount));
-            currentRound.volumeTransacted = currentRound.volumeAvailable;
-            uint256 ethToReturn = msg.value - lastAvailableAmount * currentRound.price;
+            round.volumeTransacted = round.volumeAvailable;
+            uint256 ethToReturn = msg.value - lastAvailableAmount * round.price;
             payable(msg.sender).transfer(ethToReturn);
-            currentRound.hasEnded = true;
+            round.hasEnded = true;
+            emit RoundEnded("Sale", round.price);
+            emit TokenBought(msg.sender, lastAvailableAmount);
         }
 
         address[] memory refs = referrersOf[msg.sender];
@@ -123,51 +144,73 @@ contract ACDMPlatform is Ownable {
         }
     }
 
-    // some time passes
     // TRADE @6:00
-    // если с сейл раунда остались токены мы их сжигаем
     // не может закончиться раньше чем 3 дня
     // если никто не купил или никто ордер не создавал мы стартуем и сразу заканчиваем sale-раунд
     // как только в сейл-раунде закончатся токены или по истечению 3 дней мы сможем запустить trade-раунд
-    // function startTradeRound() external onlyDuringSale onlyOwner {
-        // Round memory currentRound = rounds[rounds.length - 1];
+    function startTradeRound() external onlyDuring("sale", 0) onlyAfterStart onlyOwner {
+        PlatformSaleRound storage previousSaleRound = saleRounds[roundCount - 1];
 
-        // require(
-        //     currentRound.mode == RoundMode.SALE
-        //         && (
-        //             (currentRound.volumeTransacted >= currentRound.volumeAvailable) 
-        //                 ||  block.timestamp >= (currentRound.startedAt + ROUND_TIME)
-        //         )
-        // );
-    // }
+        require(previousSaleRound.hasEnded || (block.timestamp >= (previousSaleRound.startedAt + ROUND_TIME)),
+            "Trade round can't get started"
+        );
 
-    // // can be of buy or sell types
+        if(previousSaleRound.volumeAvailable - previousSaleRound.volumeTransacted > 0) {
+            previousSaleRound.hasEnded  = true;
+            emit RoundEnded("Sale", previousSaleRound.price);
+            TOKEN.call(abi.encodeWithSignature("burn(uint256)", previousSaleRound.volumeAvailable - previousSaleRound.volumeTransacted));
+        }
+
+        PlatformTradeRound memory newRound = PlatformTradeRound({
+            startedAt: block.timestamp,
+            volumeTransacted: 0,
+            hasEnded: false
+        });
+
+        tradeRounds[roundCount++] = newRound;
+
+        emit RoundStarted("Trade", 0);
+    }
+
     // если ордер никто не купил и он не отменился: то токены должны перейти на след раунд, изначальная цена остается
-    // function addOrder() external onlyDuringTrade {
+    function addOrder(bool isSell, uint256 amount, uint256 price) external onlyDuring("trade", 1) {
+        UserOrder memory newOrder = UserOrder({
+            isSell: isSell,
+            seller: msg.sender,
+            amount: amount,
+            price: price,
+            isActive: true
+        });
 
-    // }
+        tradeOrders[roundCount - 1].push(newOrder);
 
-    // function removeOrder() external onlyDuringTrade {
+        emit OrderAdded(isSell ? "Sell" : "Buy", amount, price);
+    }
 
-    // }
+    function removeOrder(uint256 id) external onlyDuring("trade", 1) {
+        UserOrder[] storage orders = tradeOrders[roundCount - 1];
+        require(id < orders.length, "Order with specified id doesn't exist");
+        require(orders[id].seller == msg.sender, "Only creator can cancel order");
+        orders[id].isActive = false;
+    }
 
     // // можно выкупить частично
-    // function redeemOrder() external payable onlyDuringTrade {
+    // function redeemOrder(uint256 id) external payable onlyDuring("trade", 1) {
 
     // }
 
     // qty of sold t0kens is determined by volume of previous round / new price 
-    function getVolumeAvailable(uint256 newPrice) private view returns(uint256) {
-        return rounds.length == 0 
+    function getSaleRoundVolume(uint256 newPrice) private view returns(uint256) {
+        return roundCount == 0 
             ? 100000 * 10**18
-            : rounds[rounds.length - 1].volumeTransacted / newPrice
+            : tradeRounds[roundCount - 1].volumeTransacted / newPrice
         ;
     }
 
-    function getNewPrice() private view returns(uint256) {
-        return rounds.length == 0 
+    function getNewSaleRoundPrice() private view returns(uint256) {
+        return roundCount == 0 
             ? 0.00001 ether 
-            : (rounds[rounds.length - 1].price * 103) / 100 + 0.000004 ether
+            : (saleRounds[roundCount - 2].price * 103) / 100 + 0.000004 ether
         ;
     }
 }

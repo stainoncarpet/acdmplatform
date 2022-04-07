@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-expressions */
 /* eslint-disable spaced-comment */
 /* eslint-disable no-unused-vars */
 /* eslint-disable prettier/prettier */
@@ -6,11 +7,12 @@
 
 import { expect } from "chai";
 import { ethers, network, waffle } from "hardhat";
-import { ACDMToken } from "../typechain";
 import { ACDMPlatform } from "../typechain";
 
+const pe = ethers.utils.parseEther;
+
 describe("ACDM", () => {
-  let ACDMToken, acdmToken: ACDMToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
+  let ACDMToken, acdmToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
   let signers, deployer, user1: any, user2: any, user3: any, user4: any;
 
   beforeEach(async () => {
@@ -67,23 +69,21 @@ describe("ACDM", () => {
     expect(await acdmPlatform.referrersOf(user3.address, 1))
     .to.be.equal(user1.address)
     ;
-
-    return true;
   });
 
   it("Should start and conduct sale round (without referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
-    .withArgs("Sale", ethers.utils.parseEther("0.00001"))
+    .withArgs("Sale", pe("0.00001"))
     ;
 
-    await acdmPlatform.connect(user3).buyACDM({value: ethers.utils.parseEther("1")});
-  })
+    await acdmPlatform.connect(user3).buyACDM({value: pe("1")});
+  });
 
   it("Should start and conduct sale round (with referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
-    .withArgs("Sale", ethers.utils.parseEther("0.00001"))
+    .withArgs("Sale", pe("0.00001"))
     ;
 
     await acdmPlatform.connect(user1).register("0x0000000000000000000000000000000000000000");
@@ -94,7 +94,7 @@ describe("ACDM", () => {
     const referrer1BalanceBefore = await waffle.provider.getBalance(user1.address);
     const referrer0BalanceBefore = await waffle.provider.getBalance(user2.address);
 
-    await acdmPlatform.connect(user3).buyACDM({value: ethers.utils.parseEther("1")});
+    await acdmPlatform.connect(user3).buyACDM({value: pe("1")});
 
     // referrer0 = direct referrer, referrer1 = referrer of referrer0
     const referrer1BalanceAfter = await waffle.provider.getBalance(user1.address);
@@ -102,10 +102,38 @@ describe("ACDM", () => {
 
     // referrer0 gets 0.05 eth and referrer1 gets 0.03 eth
     expect(referrer1BalanceAfter.sub(referrer1BalanceBefore))
-    .to.be.equal(ethers.utils.parseEther("0.03"))
+    .to.be.equal(pe("0.03"))
     ;
     expect(referrer0BalanceAfter.sub(referrer0BalanceBefore))
-    .to.be.equal(ethers.utils.parseEther("0.05"))
+    .to.be.equal(pe("0.05"))
     ;
-  })
+  });
+
+  it("Should start and conduct trade round (without referrers)", async () => {
+    await expect(acdmPlatform.startTradeRound())
+    .to.be.revertedWith("This action is possible only after first sale round")
+    ;
+
+    await expect(acdmPlatform.startSaleRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Sale", pe("0.00001"))
+    ;
+
+    await acdmPlatform.connect(user1).buyACDM({value: pe("1")});
+
+    await expect(acdmPlatform.startTradeRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Trade", 0)
+    ;
+
+    await expect(
+      acdmPlatform
+        .connect(user1)
+        .addOrder(true, pe("1000"), pe("0.00002"))
+    )
+    .to.emit(acdmPlatform, "OrderAdded")
+    .withArgs("Sell", pe("1000"), pe("0.00002"))
+  
+      console.log(await acdmPlatform.tradeOrders(1, 0))
+  });
 });
