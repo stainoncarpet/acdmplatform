@@ -103,7 +103,8 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         uint256 newPrice = getNewSaleRoundPrice();
         uint256 amountToMint = getSaleRoundVolume(newPrice);
 
-        TOKEN.call(abi.encodeWithSignature("mint(uint256)", amountToMint));
+        (bool success,) = TOKEN.call(abi.encodeWithSignature("mint(uint256)", amountToMint));
+        require(success, "Failed to mint");
 
         PlatformSaleRound memory newRound = PlatformSaleRound({
             startedAt: block.timestamp,
@@ -118,7 +119,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         emit RoundStarted("Sale", newRound.price);
 
         // if during previous trade round there was no activity we immediately close sale round
-        if (roundCount > 1 && (tradeOrders[roundCount - 1].length == 0 || tradeRounds[roundCount - 1].volumeTransacted == 0)) {
+        if (roundCount > 2 && (tradeOrders[roundCount - 2].length == 0 || tradeRounds[roundCount - 2].volumeTransacted == 0)) {
             closeSaleRoundAndBurn();
         }
     }
@@ -129,23 +130,29 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         PlatformSaleRound storage round = saleRounds[roundCount - 1];
 
         uint256 maxAmountToBuy = msg.value / round.price * 10**18;
+        console.log("maxAmountToBuy", maxAmountToBuy);
         uint256 lastAvailableAmount = round.volumeAvailable - round.volumeTransacted;
+        console.log(round.volumeAvailable, round.volumeTransacted);
+        console.log("lastAvailableAmount", lastAvailableAmount);
 
         if(lastAvailableAmount > maxAmountToBuy) {
-            TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, maxAmountToBuy));
+            (bool success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, maxAmountToBuy));
+            require(success, "Failed: 1");
             round.volumeTransacted += maxAmountToBuy;
             emit TokenBought(msg.sender, maxAmountToBuy);
             rewardReferrers(msg.sender, msg.value, 50, 30);
         } else if (lastAvailableAmount == maxAmountToBuy) {
-            TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, maxAmountToBuy));
+            (bool success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, maxAmountToBuy));
+            require(success, "Failed: 2");
             round.volumeTransacted = round.volumeAvailable;
             round.hasEnded = true;
             emit TokenBought(msg.sender, maxAmountToBuy);
             emit RoundEnded("Sale", round.price);
             rewardReferrers(msg.sender, msg.value, 50, 30);
         } else {
-            console.log(roundCount - 1);
-            TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, lastAvailableAmount));
+            (bool success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, lastAvailableAmount));
+            console.log("lastAvailableAmount", lastAvailableAmount);
+            require(success, "Failed: 3");
             round.volumeTransacted = round.volumeAvailable;
             uint256 ethToReturn = msg.value - (lastAvailableAmount * round.price) / 10**18;
             payable(msg.sender).transfer(ethToReturn);
@@ -189,7 +196,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
 
     function addOrder(uint256 amount, uint256 price) external onlyDuring("trade", 1) {
         (bool success,) = TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount));
-        
+        console.log("addOrder", amount, price); // correct
         require(success, "Failed to place order");
         
         UserTradeOrder memory newOrder = UserTradeOrder({
@@ -218,7 +225,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         emit OrderRemoved(id, orders[id].price);
     }
 
-    function redeemOrder(uint256 id, uint256 amount) external payable onlyDuring("trade", 1) nonReentrant {
+    function redeemOrder(uint256 id) external payable onlyDuring("trade", 1) nonReentrant {
         require(!hasRoundEnded("trade"), "Round has ended");
         
         UserTradeOrder[] storage orders = tradeOrders[roundCount - 1];
@@ -227,31 +234,24 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         require(orders[id].volumeAvailable > 0, "Order is no longer available");
         require(msg.value >= 0.00001 ether, "Minimum amount is 0.00001 ETH");
 
-        uint256 enoughToBuyAmount = msg.value / orders[id].price * 10**18;
+        uint256 maxAmountToBuyAmount = msg.value / orders[id].price * 10**18;
 
-        if(enoughToBuyAmount > amount) {
-            uint256 ethToReturn = msg.value - (amount * orders[id].price) / 10**18;
-            payable(msg.sender).transfer(ethToReturn);
-        } else if(enoughToBuyAmount < amount) {
-            revert("Not enough ETH to purchase specified amount provided");
-        }
+        if(orders[id].volumeAvailable > maxAmountToBuyAmount) {
+            TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", orders[id].creator, msg.sender, maxAmountToBuyAmount));
 
-        if(orders[id].volumeAvailable > amount) {
-            TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", orders[id].creator, msg.sender, amount));
-
-            orders[id].volumeAvailable -= amount;
-            orders[id].volumeTransacted += amount;
-            tradeRounds[roundCount - 1].volumeTransacted += amount;
+            orders[id].volumeAvailable -= maxAmountToBuyAmount;
+            orders[id].volumeTransacted += maxAmountToBuyAmount;
+            tradeRounds[roundCount - 1].volumeTransacted += msg.value;
             
-            rewardReferrers(msg.sender, amount, 25, 25);
-            emit TokenBought(msg.sender, amount);  
-        } else if (orders[id].volumeAvailable == amount) {
-            TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", orders[id].creator, msg.sender, amount));
+            rewardReferrers(msg.sender, msg.value, 25, 25);
+            emit TokenBought(msg.sender, maxAmountToBuyAmount);  
+        } else if (orders[id].volumeAvailable == maxAmountToBuyAmount) {
+            TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", orders[id].creator, msg.sender, maxAmountToBuyAmount));
             orders[id].volumeAvailable = 0;
-            orders[id].volumeTransacted += amount;
-            tradeRounds[roundCount - 1].volumeTransacted += amount;
-            rewardReferrers(msg.sender, amount, 25, 25);
-            emit TokenBought(msg.sender, amount);
+            orders[id].volumeTransacted += maxAmountToBuyAmount;
+            tradeRounds[roundCount - 1].volumeTransacted += msg.value;
+            rewardReferrers(msg.sender, msg.value, 25, 25);
+            emit TokenBought(msg.sender, maxAmountToBuyAmount);
             emit OrderRedeemed(orders[id].volumeAvailable + orders[id].volumeTransacted, orders[id].price);
         } else {
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, orders[id].volumeAvailable));
@@ -260,20 +260,29 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
 
             emit TokenBought(msg.sender, orders[id].volumeAvailable);
             emit OrderRedeemed(orders[id].volumeAvailable + orders[id].volumeTransacted, orders[id].price);
-            rewardReferrers(msg.sender, orders[id].volumeAvailable, 25, 25);
+            rewardReferrers(msg.sender, msg.value - ethToReturn, 25, 25);
 
             orders[id].volumeTransacted += orders[id].volumeAvailable;
-            tradeRounds[roundCount - 1].volumeTransacted += orders[id].volumeAvailable;
+            tradeRounds[roundCount - 1].volumeTransacted += msg.value - ethToReturn;
             orders[id].volumeAvailable = 0;
         }
     }
 
     // qty of sold t0kens is determined by volume of previous round / new price 
     function getSaleRoundVolume(uint256 newPrice) private view returns(uint256) {
+        if(roundCount > 0) {
+            console.log("calculating new volume");
+            console.log(tradeRounds[roundCount - 1].volumeTransacted);
+            console.log(newPrice);
+            
+            
+            uint256 ddd = tradeRounds[roundCount - 1].volumeTransacted / newPrice * 10**18;
+            console.log("new round volume", ddd);
+        }
+
         return roundCount == 0 
-            ? 100000 * 10**18
-            : tradeRounds[roundCount - 1].volumeTransacted / newPrice
-        ;
+            ? 100000 * 10**18 
+            : tradeRounds[roundCount - 1].volumeTransacted / newPrice * 10**18;
     }
 
     function getNewSaleRoundPrice() private view returns(uint256) {
@@ -316,3 +325,13 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 }
+
+// 6993006993000000000000000000 - bad
+
+// 100000000000000000000000 from 1 eth
+// 26737960000000000000000 from 0.5 eth
+
+// 18700000000000
+// 14300000000000
+// 20000000000000
+// 30000000000000

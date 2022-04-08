@@ -115,7 +115,7 @@ describe("ACDM", () => {
     await expect(
       acdmPlatform
         .connect(user2)
-        .redeemOrder(0, parseEth(orderAmount), {value: parseEth("2")})
+        .redeemOrder(0, {value: parseEth("2")})
     )
     .to.emit(acdmPlatform, "TokenBought")
     .withArgs(user2.address, parseEth(orderAmount))
@@ -161,7 +161,7 @@ describe("ACDM", () => {
 
     // user2 buys all tokens
     await acdmPlatform.connect(user2)
-          .redeemOrder(0, parseEth(orderAmount), {value: parseEth("3")})
+          .redeemOrder(0, {value: parseEth("3")})
 
     // fast forward 3+ days
     await network.provider.request({ method: "evm_increaseTime", params: [90000] });
@@ -169,10 +169,32 @@ describe("ACDM", () => {
 
     // SALE ROUND 2
     await acdmPlatform.startSaleRound();
-    console.log(await acdmPlatform.saleRounds(2))
+
+    console.log("supply", await acdmToken.totalSupply())
+    console.log("PLATFORM BALANCE", await acdmToken.balanceOf(acdmPlatform.address))
+
     await acdmPlatform.connect(user3).buyACDM({value: parseEth("10")});
 
-    //console.log("!!")
+    console.log("BALANCE", await acdmToken.balanceOf(user3.address))
+
+    //TRADE ROUND 2
+    await acdmPlatform.startTradeRound();
+    
+    await acdmToken.connect(user3).approve(acdmPlatform.address, parseEth("50000"));
+    
+    console.log("token balance", await acdmToken.balanceOf(user3.address), ethers.utils.formatEther(await acdmToken.balanceOf(user3.address)))
+    
+    // user3 adds sell order
+    await acdmPlatform.connect(user3)
+      .addOrder(parseEth("50000"), parseEth("0.00003"))
+
+    // user2 buys all tokens
+    await acdmPlatform.connect(user4)
+      .redeemOrder(0, {value: parseEth("0.57")})
+
+    // fast forward 3+ days
+    await network.provider.request({ method: "evm_increaseTime", params: [90000] });
+    await network.provider.request({ method: "evm_mine", params: [] });
   });
 /*
   it("Should start and conduct sale round 1 (with referrers)", async () => {
@@ -281,7 +303,7 @@ describe("ACDM", () => {
     await expect(
       acdmPlatform
       .connect(user2)
-      .redeemOrder(0, parseEth("100001"), { value: parseEth("2")})
+      .redeemOrder(0, { value: parseEth("2")})
     )
     .to.emit(acdmPlatform, "TokenBought")
     .withArgs(user2.address, parseEth("100000"))
