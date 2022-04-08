@@ -72,8 +72,8 @@ describe("ACDM", () => {
     .to.be.equal(user1.address)
     ;
   });
-
-  it("Should start and conduct sale round (without referrers)", async () => {
+/*
+  it("Should start and conduct sale round 1 (without referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
     .withArgs("Sale", parseEth("0.00001"))
@@ -82,7 +82,100 @@ describe("ACDM", () => {
     await acdmPlatform.connect(user3).buyACDM({value: parseEth("1")});
   });
 
-  it("Should start and conduct sale round (with referrers)", async () => {
+  it("Should start and conduct sale round 2 (without referrers)", async () => {
+    // SALE ROUND 1
+    await expect(acdmPlatform.startSaleRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Sale", parseEth("0.00001"))
+    ;
+
+    await acdmPlatform.connect(user1).buyACDM({value: parseEth("1")});
+
+    // TRADE ROUND 1
+    await expect(acdmPlatform.startTradeRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Trade", 0)
+    ;
+
+    await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("100000"));
+
+    // user1 adds sell order
+    await expect(
+      acdmPlatform
+        .connect(user1)
+        .addOrder(parseEth("100000"), parseEth("0.00002"))
+    )
+    .to.emit(acdmPlatform, "OrderAdded")
+    .withArgs(parseEth("100000"), parseEth("0.00002"))
+    ;
+
+    const orderAmount = "100000";
+
+    // user2 buys 90000/100000 tokens
+    await expect(
+      acdmPlatform
+        .connect(user2)
+        .redeemOrder(0, parseEth(orderAmount), {value: parseEth("2")})
+    )
+    .to.emit(acdmPlatform, "TokenBought")
+    .withArgs(user2.address, parseEth(orderAmount))
+    ;
+
+    // try to start sale round prematurely
+    await expect(acdmPlatform.startSaleRound())
+    .to.be.revertedWith("Trade round is still ongoing")
+    ;
+
+    // fast forward 3+ days to try again then
+    await network.provider.request({ method: "evm_increaseTime", params: [90000] });
+    await network.provider.request({ method: "evm_mine", params: [] });
+
+    // SALE ROUND 2
+    await expect(acdmPlatform.startSaleRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Sale", parseEth("0.0000143"))
+    ;
+
+    //console.log(await acdmPlatform.saleRounds(2));
+
+    // roundId
+    //console.log(await acdmPlatform.tradeRounds(1));
+    // roundId, orderId
+    //console.log(await acdmPlatform.tradeOrders(1, 0));
+  });
+*/
+  it("Should start and conduct sale round 3 (without referrers)", async () => {
+    // SALE ROUND 1
+    await acdmPlatform.startSaleRound();
+    await acdmPlatform.connect(user1).buyACDM({value: parseEth("1")});
+
+    // TRADE ROUND 1
+    await acdmPlatform.startTradeRound();
+    await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("100000"));
+
+    // user1 adds sell order
+    await acdmPlatform.connect(user1)
+                      .addOrder(parseEth("100000"), parseEth("0.00002"))
+
+    const orderAmount = "100000";
+
+    // user2 buys all tokens
+    await acdmPlatform.connect(user2)
+          .redeemOrder(0, parseEth(orderAmount), {value: parseEth("3")})
+
+    // fast forward 3+ days
+    await network.provider.request({ method: "evm_increaseTime", params: [90000] });
+    await network.provider.request({ method: "evm_mine", params: [] });
+
+    // SALE ROUND 2
+    await acdmPlatform.startSaleRound();
+    console.log(await acdmPlatform.saleRounds(2))
+    await acdmPlatform.connect(user3).buyACDM({value: parseEth("10")});
+
+    //console.log("!!")
+  });
+/*
+  it("Should start and conduct sale round 1 (with referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
     .withArgs("Sale", parseEth("0.00001"))
@@ -194,6 +287,6 @@ describe("ACDM", () => {
     .withArgs(user2.address, parseEth("100000"))
     ;
 
-  });
+  });*/
 });
 

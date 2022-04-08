@@ -35,7 +35,8 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         uint256 price;
     }
     
-    mapping(address => address[]) public referrersOf; // item0 - direct referrer, item1 - referrer of referrer
+    // item0 - direct referrer, item1 - referrer of referrer
+    mapping(address => address[]) public referrersOf;
     mapping(address => bool) public isRegistered;
     mapping(uint256 => PlatformSaleRound) public saleRounds;
     mapping(uint256 => PlatformTradeRound) public tradeRounds;
@@ -49,13 +50,18 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         ROUND_TIME = roundTime;
     }
 
-    // offset 0 = before creating new item, offset 1 = after creating new item
+    // offset 0 = before starting new round, offset 1 = after starting new round
     modifier onlyDuring(bytes32 what, uint8 offset) {
         bool isSaleRoundCurrent = (roundCount - offset) % 2 == 0;
 
-        if(roundCount > offset) {
-            require(isSaleRoundCurrent ? !saleRounds[roundCount].hasEnded : !tradeRounds[roundCount].hasEnded, "Round has ended");
-        }
+        // if(roundCount > offset) {
+        //     require(
+        //         isSaleRoundCurrent 
+        //             ? !saleRounds[roundCount].hasEnded 
+        //             : !tradeRounds[roundCount].hasEnded, 
+        //         "Round has ended"
+        //     );
+        // }
 
         if(what == "sale" && offset == 1) {
             require(isSaleRoundCurrent, "Allowed only during sale periods");
@@ -89,14 +95,9 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
     }
 
     function startSaleRound() external onlyDuring("trade", 0) onlyOwner {
-        // check if we can close previous trade round
+        // check if we can close ongoing trade round
         if (roundCount > 0) {
-            require(
-                block.timestamp >= (tradeRounds[roundCount - 1].startedAt + ROUND_TIME), 
-                "Sale round can't get started"
-            );
-
-            closeTradeRound();
+            require(hasRoundEnded("trade"), "Trade round is still ongoing");
         }
 
         uint256 newPrice = getNewSaleRoundPrice();
@@ -118,7 +119,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
 
         // if during previous trade round there was no activity we immediately close sale round
         if (roundCount > 1 && (tradeOrders[roundCount - 1].length == 0 || tradeRounds[roundCount - 1].volumeTransacted == 0)) {
-            closeSaleRound();
+            closeSaleRoundAndBurn();
         }
     }
 
@@ -143,9 +144,10 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
             emit RoundEnded("Sale", round.price);
             rewardReferrers(msg.sender, msg.value, 50, 30);
         } else {
+            console.log(roundCount - 1);
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, lastAvailableAmount));
             round.volumeTransacted = round.volumeAvailable;
-            uint256 ethToReturn = msg.value - lastAvailableAmount * round.price;
+            uint256 ethToReturn = msg.value - (lastAvailableAmount * round.price) / 10**18;
             payable(msg.sender).transfer(ethToReturn);
             round.hasEnded = true;
             emit TokenBought(msg.sender, lastAvailableAmount);
@@ -161,7 +163,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         );
 
         // close sale round if it wasn't closed before but time expired
-        if(!saleRounds[roundCount - 1].hasEnded) { closeSaleRound(); }
+        if(!saleRounds[roundCount - 1].hasEnded) { closeSaleRoundAndBurn(); }
 
         PlatformTradeRound memory newRound = PlatformTradeRound({
             startedAt: block.timestamp,
@@ -217,7 +219,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
     }
 
     function redeemOrder(uint256 id, uint256 amount) external payable onlyDuring("trade", 1) nonReentrant {
-        checkRoundTimeLimit("trade");
+        require(!hasRoundEnded("trade"), "Round has ended");
         
         UserTradeOrder[] storage orders = tradeOrders[roundCount - 1];
 
@@ -248,7 +250,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
             orders[id].volumeAvailable = 0;
             orders[id].volumeTransacted += amount;
             tradeRounds[roundCount - 1].volumeTransacted += amount;
-
             rewardReferrers(msg.sender, amount, 25, 25);
             emit TokenBought(msg.sender, amount);
             emit OrderRedeemed(orders[id].volumeAvailable + orders[id].volumeTransacted, orders[id].price);
@@ -293,23 +294,19 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 
-    function checkRoundTimeLimit(bytes32 roundType) private {
+    function hasRoundEnded(bytes32 roundType) private returns(bool){
         if(roundType == "trade" && block.timestamp >= tradeRounds[roundCount - 1].startedAt + ROUND_TIME) {
-            closeTradeRound();
-            revert("Round has ended");
+            tradeRounds[roundCount - 1].hasEnded = true; 
+            return true;
         } else if(roundType == "sale" && block.timestamp >= saleRounds[roundCount - 1].startedAt + ROUND_TIME) {
             saleRounds[roundCount - 1].hasEnded = true;
-            revert("Round has ended");
+            return true;
+        } else {
+            return false;
         }
     }
 
-    function closeTradeRound() private {
-        UserTradeOrder[] memory orders = tradeOrders[roundCount - 1];
-
-        tradeRounds[roundCount - 1].hasEnded = true; 
-    }
-
-    function closeSaleRound() private {
+    function closeSaleRoundAndBurn() private {
         PlatformSaleRound memory previousSaleRound = saleRounds[roundCount - 1];
 
         if(previousSaleRound.volumeAvailable - previousSaleRound.volumeTransacted > 0) {
