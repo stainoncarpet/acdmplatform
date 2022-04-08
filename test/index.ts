@@ -15,7 +15,7 @@ const parseEth = ethers.utils.parseEther;
 
 describe("ACDM", () => {
   let ACDMToken, acdmToken: ACDMToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
-  let signers, deployer, user1: any, user2: any, user3: any, user4: any;
+  let signers, deployer, user1: any, user2: any, user3: any, user4: any, user5: any, user6: any;
 
   beforeEach(async () => {
     ACDMToken = await ethers.getContractFactory("ACDMToken");
@@ -29,12 +29,7 @@ describe("ACDM", () => {
     await acdmToken.setPlatform(acdmPlatform.address);
 
     signers = await ethers.getSigners();
-    [deployer, user1, user2, user3, user4] = signers;
-
-    // console.log("DEPLOYER", deployer.address)
-    // console.log("[USER1]", user1.address)
-    // console.log("[USER2]", user2.address)
-    // console.log("[USER3]", user3.address)
+    [deployer, user1, user2, user3, user4, user5, user6] = signers;
   });
 
   it("Should register self and referrers", async () => {
@@ -72,7 +67,7 @@ describe("ACDM", () => {
     .to.be.equal(user1.address)
     ;
   });
-/*
+
   it("Should start and conduct sale round 1 (without referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
@@ -135,16 +130,9 @@ describe("ACDM", () => {
     .to.emit(acdmPlatform, "RoundStarted")
     .withArgs("Sale", parseEth("0.0000143"))
     ;
-
-    //console.log(await acdmPlatform.saleRounds(2));
-
-    // roundId
-    //console.log(await acdmPlatform.tradeRounds(1));
-    // roundId, orderId
-    //console.log(await acdmPlatform.tradeOrders(1, 0));
   });
-*/
-  it("Should start and conduct sale round 3 (without referrers)", async () => {
+
+  it("Should start and conduct sale & trade round 3 (without referrers)", async () => {
     // SALE ROUND 1
     await acdmPlatform.startSaleRound();
     await acdmPlatform.connect(user1).buyACDM({value: parseEth("1")});
@@ -157,8 +145,6 @@ describe("ACDM", () => {
     await acdmPlatform.connect(user1)
                       .addOrder(parseEth("100000"), parseEth("0.00002"))
 
-    const orderAmount = "100000";
-
     // user2 buys all tokens
     await acdmPlatform.connect(user2)
           .redeemOrder(0, {value: parseEth("3")})
@@ -170,33 +156,44 @@ describe("ACDM", () => {
     // SALE ROUND 2
     await acdmPlatform.startSaleRound();
 
-    console.log("supply", await acdmToken.totalSupply())
-    console.log("PLATFORM BALANCE", await acdmToken.balanceOf(acdmPlatform.address))
-
     await acdmPlatform.connect(user3).buyACDM({value: parseEth("10")});
-
-    console.log("BALANCE", await acdmToken.balanceOf(user3.address))
 
     //TRADE ROUND 2
     await acdmPlatform.startTradeRound();
     
     await acdmToken.connect(user3).approve(acdmPlatform.address, parseEth("50000"));
     
-    console.log("token balance", await acdmToken.balanceOf(user3.address), ethers.utils.formatEther(await acdmToken.balanceOf(user3.address)))
-    
     // user3 adds sell order
     await acdmPlatform.connect(user3)
       .addOrder(parseEth("50000"), parseEth("0.00003"))
 
-    // user2 buys all tokens
+    // user2 buys some tokens
     await acdmPlatform.connect(user4)
-      .redeemOrder(0, {value: parseEth("0.57")})
+      .redeemOrder(0, {value: parseEth("0.5")})
 
     // fast forward 3+ days
     await network.provider.request({ method: "evm_increaseTime", params: [90000] });
     await network.provider.request({ method: "evm_mine", params: [] });
+
+    // SALE ROUND 3
+    await expect(acdmPlatform.startSaleRound())
+    .to.emit(acdmPlatform, "RoundStarted")
+    .withArgs("Sale", parseEth("0.000018729000000000"))
+    ;
+
+    await acdmPlatform.connect(user5).buyACDM({value: parseEth("10")});
+
+    // TRADE ROUND 3
+    await acdmPlatform.startTradeRound();
+    await acdmToken.connect(user5).approve(acdmPlatform.address, parseEth("10000"));
+    
+    // user5 adds sell order
+    await acdmPlatform.connect(user5).addOrder(parseEth("10000"), parseEth("0.00005"))
+
+    // user6 buys some tokens
+    await acdmPlatform.connect(user6).redeemOrder(0, {value: parseEth("1")})
   });
-/*
+
   it("Should start and conduct sale round 1 (with referrers)", async () => {
     await expect(acdmPlatform.startSaleRound())
     .to.emit(acdmPlatform, "RoundStarted")
@@ -288,7 +285,6 @@ describe("ACDM", () => {
     .withArgs("Trade", 0)
     ;
 
-    //
     await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("100000"));
 
     await expect(
@@ -309,6 +305,42 @@ describe("ACDM", () => {
     .withArgs(user2.address, parseEth("100000"))
     ;
 
-  });*/
+  });
+
+  it("Should start trade round, add and redeem orders (with referrers)", async () => {
+    await acdmPlatform.connect(user1).register("0x0000000000000000000000000000000000000000");
+    await acdmPlatform.connect(user2).register(user1.address);
+    await acdmPlatform.connect(user3).register(user2.address);
+
+    // SALE ROUND 1
+    await acdmPlatform.startSaleRound();
+    await acdmPlatform.connect(user1).buyACDM({value: parseEth("1")});
+
+    // TRADE ROUND 1
+    await acdmPlatform.startTradeRound();
+    await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("100000"));
+    await acdmPlatform.connect(user1).addOrder(parseEth("100000"), parseEth("0.00002"));
+
+    // referrer0 = direct referrer, referrer1 = referrer of referrer0
+    const referrer1BalanceBefore = await waffle.provider.getBalance(user1.address);
+    const referrer0BalanceBefore = await waffle.provider.getBalance(user2.address);
+
+    await expect(
+      acdmPlatform
+      .connect(user3)
+      .redeemOrder(0, { value: parseEth("2")})
+    )
+    .to.emit(acdmPlatform, "TokenBought")
+    .withArgs(user3.address, parseEth("100000"))
+    ;
+
+    // referrer0 = direct referrer, referrer1 = referrer of referrer0
+    const referrer1BalanceAfter = await waffle.provider.getBalance(user1.address);
+    const referrer0BalanceAfter = await waffle.provider.getBalance(user2.address);
+
+    // user3 spent 2 eth, each referrer gets 2.5% of that, or 0.05 eth
+    expect(referrer0BalanceAfter.sub(referrer0BalanceBefore)).to.be.equal(parseEth("0.05"));
+    expect(referrer1BalanceAfter.sub(referrer1BalanceBefore)).to.be.equal(parseEth("0.05"));
+  });
 });
 

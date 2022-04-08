@@ -1,4 +1,4 @@
-//SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
 
 pragma solidity >=0.8.12 <0.9.0;
 
@@ -53,15 +53,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
     // offset 0 = before starting new round, offset 1 = after starting new round
     modifier onlyDuring(bytes32 what, uint8 offset) {
         bool isSaleRoundCurrent = (roundCount - offset) % 2 == 0;
-
-        // if(roundCount > offset) {
-        //     require(
-        //         isSaleRoundCurrent 
-        //             ? !saleRounds[roundCount].hasEnded 
-        //             : !tradeRounds[roundCount].hasEnded, 
-        //         "Round has ended"
-        //     );
-        // }
 
         if(what == "sale" && offset == 1) {
             require(isSaleRoundCurrent, "Allowed only during sale periods");
@@ -130,10 +121,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         PlatformSaleRound storage round = saleRounds[roundCount - 1];
 
         uint256 maxAmountToBuy = msg.value / round.price * 10**18;
-        console.log("maxAmountToBuy", maxAmountToBuy);
         uint256 lastAvailableAmount = round.volumeAvailable - round.volumeTransacted;
-        console.log(round.volumeAvailable, round.volumeTransacted);
-        console.log("lastAvailableAmount", lastAvailableAmount);
 
         if(lastAvailableAmount > maxAmountToBuy) {
             (bool success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, maxAmountToBuy));
@@ -151,7 +139,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
             rewardReferrers(msg.sender, msg.value, 50, 30);
         } else {
             (bool success,) = TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, lastAvailableAmount));
-            console.log("lastAvailableAmount", lastAvailableAmount);
             require(success, "Failed: 3");
             round.volumeTransacted = round.volumeAvailable;
             uint256 ethToReturn = msg.value - (lastAvailableAmount * round.price) / 10**18;
@@ -196,7 +183,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
 
     function addOrder(uint256 amount, uint256 price) external onlyDuring("trade", 1) {
         (bool success,) = TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount));
-        console.log("addOrder", amount, price); // correct
         require(success, "Failed to place order");
         
         UserTradeOrder memory newOrder = UserTradeOrder({
@@ -270,16 +256,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
 
     // qty of sold t0kens is determined by volume of previous round / new price 
     function getSaleRoundVolume(uint256 newPrice) private view returns(uint256) {
-        if(roundCount > 0) {
-            console.log("calculating new volume");
-            console.log(tradeRounds[roundCount - 1].volumeTransacted);
-            console.log(newPrice);
-            
-            
-            uint256 ddd = tradeRounds[roundCount - 1].volumeTransacted / newPrice * 10**18;
-            console.log("new round volume", ddd);
-        }
-
         return roundCount == 0 
             ? 100000 * 10**18 
             : tradeRounds[roundCount - 1].volumeTransacted / newPrice * 10**18;
@@ -325,13 +301,3 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 }
-
-// 6993006993000000000000000000 - bad
-
-// 100000000000000000000000 from 1 eth
-// 26737960000000000000000 from 0.5 eth
-
-// 18700000000000
-// 14300000000000
-// 20000000000000
-// 30000000000000
