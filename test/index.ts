@@ -128,7 +128,6 @@ describe("ACDM", () => {
     .withArgs("Trade", 0)
     ;
 
-    //
     await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("1000"));
 
     const balanceBeforeAddOrder = await acdmToken.balanceOf(user1.address);
@@ -148,7 +147,7 @@ describe("ACDM", () => {
 
     await expect(acdmPlatform.connect(user1).removeOrder(0))
     .to.emit(acdmPlatform, "OrderRemoved")
-    .withArgs(parseEth("1000"), parseEth("0.00001"))
+    .withArgs(0, parseEth("0.00001"))
     ;
 
     const balanceAfterRemoveOrder = await acdmToken.balanceOf(user1.address);
