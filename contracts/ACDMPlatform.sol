@@ -12,7 +12,6 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
     event TokenBought(address indexed buyer, uint256 indexed amount);
     event OrderAdded(uint256 indexed amount, uint256 indexed price);
     event OrderRemoved(uint256 indexed id, uint256 indexed price);
-    event OrderRedeemed(uint256 indexed amount, uint256 indexed price);
 
     struct PlatformSaleRound {
         uint256 startedAt;
@@ -35,8 +34,7 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         uint256 price;
     }
     
-    // item0 - direct referrer, item1 - referrer of referrer
-    mapping(address => address[]) public referrersOf;
+    mapping(address => mapping(uint8 => address)) public referrersOf;
     mapping(address => bool) public isRegistered;
     mapping(uint256 => PlatformSaleRound) public saleRounds;
     mapping(uint256 => PlatformTradeRound) public tradeRounds;
@@ -67,24 +65,29 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         _;
     }
 
+    /// @notice register in affiliate program
+    /// @dev in referrersOf, 0 - immediate referrer, 1 - referrer of referrer 0, distant referrer of sender
+    /// @param referrer - address of immediate referrer (either zero address or registered user)
     function register(address referrer) external {
         require(!isRegistered[msg.sender], "Already registered");
         require(msg.sender != referrer, "Can't register oneself as referrer");
-        require(referrersOf[referrer].length > 0 ? referrersOf[referrer][0] != msg.sender : true, "Circular referrer relation");
+        require(referrersOf[referrer][0] != address(0) ? referrersOf[referrer][0] != msg.sender : true, "Circular referrer relation");
 
         if(referrer == address(0)) {
             isRegistered[msg.sender] = true;
         } else {
             require(isRegistered[referrer], "Referrer is not registered");
 
-            referrersOf[msg.sender].push(referrer);
+            referrersOf[msg.sender][0] = referrer;
             isRegistered[msg.sender] = true;
 
             // if referrer has referrer, add it to caller's list of referrers
-            if(referrersOf[referrer].length > 0) { referrersOf[msg.sender].push(referrersOf[referrer][0]); }
+            if(referrersOf[referrer][0] != address(0)) { referrersOf[msg.sender][1] = referrersOf[referrer][0]; }
         }
     }
 
+    /// @notice starts new sale round if conditions are met
+    /// @dev relies on allowance from token seller
     function startSaleRound() external onlyDuring("trade", 0) onlyOwner {
         // check if we can close ongoing trade round
         if (roundCount > 0) {
@@ -115,6 +118,8 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 
+    /// @notice buys tokens during sale round
+    /// @dev accepts ETH, determines how much can be bought, and returns ETH if sale limit is reached
     function buyACDM() external payable onlyDuring("sale", 1) onlyAfterStart nonReentrant {
         require(msg.value > 0, "Value is 0");
 
@@ -150,14 +155,13 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 
-    // как только в сейл-раунде закончатся токены или по истечению 3 дней мы сможем запустить trade-раунд
+    /// @notice starts new trade round if conditions are met
+    /// @dev can be started if all sale round tokens are sold or round time expires
     function startTradeRound() external onlyDuring("sale", 0) onlyAfterStart onlyOwner {
-        require(saleRounds[roundCount - 1].hasEnded || (block.timestamp >= (saleRounds[roundCount - 1].startedAt + ROUND_TIME)),
-            "Trade round can't get started"
-        );
-
         // close sale round if it wasn't closed before but time expired
-        if(!saleRounds[roundCount - 1].hasEnded) { closeSaleRoundAndBurn(); }
+        if((block.timestamp >= (saleRounds[roundCount - 1].startedAt + ROUND_TIME)) && !saleRounds[roundCount - 1].hasEnded) { closeSaleRoundAndBurn(); }
+
+        require(saleRounds[roundCount - 1].hasEnded, "Trade round can't get started" );
 
         PlatformTradeRound memory newRound = PlatformTradeRound({
             startedAt: block.timestamp,
@@ -168,19 +172,12 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         tradeRounds[roundCount++] = newRound;
 
         emit RoundStarted("Trade", 0);
-
-        // carry over remaining orders from previous trade round
-        if(roundCount > 3) {
-            for (uint256 i = 0; i < tradeOrders[roundCount - 3].length; i++) {
-                if(tradeOrders[roundCount - 3][i].volumeAvailable > 0) {
-                    tradeOrders[roundCount - 1].push(tradeOrders[roundCount - 3][i]);
-                }
-            }
-            // this doesn't have to be deleted because we always manipulate the latest arrays
-            // delete tradeOrders[roundCount - 3];
-        }
     }
 
+    /// @notice adds order to ongoing trade round
+    /// @dev relies on allowance from token seller
+    /// @param amount - amount to token to be sold
+    /// @param price - price of token in ETH
     function addOrder(uint256 amount, uint256 price) external onlyDuring("trade", 1) {
         (bool success,) = TOKEN.call(abi.encodeWithSignature("transferFrom(address,address,uint256)", msg.sender, address(this), amount));
         require(success, "Failed to place order");
@@ -197,6 +194,9 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         emit OrderAdded(amount, price);
     }
 
+    /// @notice removes order from ongoing trade round
+    /// @dev returns tokens to seller
+    /// @param id - id of order destined for removal 
     function removeOrder(uint256 id) external onlyDuring("trade", 1) {
         UserTradeOrder[] storage orders = tradeOrders[roundCount - 1];
 
@@ -211,6 +211,9 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         emit OrderRemoved(id, orders[id].price);
     }
 
+    /// @notice accepts ETH and triggers token purchase
+    /// @dev called by buyer, can be redeemed partially
+    /// @param id - id of order within latest trade round 
     function redeemOrder(uint256 id) external payable onlyDuring("trade", 1) nonReentrant {
         require(!hasRoundEnded("trade"), "Round has ended");
         
@@ -238,14 +241,12 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
             tradeRounds[roundCount - 1].volumeTransacted += msg.value;
             rewardReferrers(msg.sender, msg.value, 25, 25);
             emit TokenBought(msg.sender, maxAmountToBuyAmount);
-            emit OrderRedeemed(orders[id].volumeAvailable + orders[id].volumeTransacted, orders[id].price);
         } else {
             TOKEN.call(abi.encodeWithSignature("transfer(address,uint256)", msg.sender, orders[id].volumeAvailable));
             uint256 ethToReturn = msg.value - (orders[id].volumeAvailable * orders[id].price) / 10**18;
             payable(msg.sender).transfer(ethToReturn);
 
             emit TokenBought(msg.sender, orders[id].volumeAvailable);
-            emit OrderRedeemed(orders[id].volumeAvailable + orders[id].volumeTransacted, orders[id].price);
             rewardReferrers(msg.sender, msg.value - ethToReturn, 25, 25);
 
             orders[id].volumeTransacted += orders[id].volumeAvailable;
@@ -254,13 +255,19 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 
-    // qty of sold t0kens is determined by volume of previous round / new price 
+    /// @notice calculates quantity of tokens for sale
+    /// @dev determined by volume of previous round / new price
+    /// @param newPrice - price per token in ETH
+    /// @return volume of tokens sold during upcoming sale round
     function getSaleRoundVolume(uint256 newPrice) private view returns(uint256) {
         return roundCount == 0 
             ? 100000 * 10**18 
             : tradeRounds[roundCount - 1].volumeTransacted / newPrice * 10**18;
     }
 
+    /// @notice calculates current token price depending on round
+    /// @dev initial price is 0.00001 ether, then it scales according to a formula
+    /// @return amount of ETH per token
     function getNewSaleRoundPrice() private view returns(uint256) {
         return roundCount == 0 
             ? 0.00001 ether 
@@ -268,17 +275,23 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         ;
     }
 
+    /// @notice sends ETH to referral's referrers if they exist
+    /// @param referral - address whose referrers to award 
+    /// @param value - amount of ETH that was used to purchase tokens 
+    /// @param reward0 - percentage multiplied by ten, e.g. 2.5% is 25, commission sent to immediate referrer
+    /// @param reward0 - percentage multiplied by ten, e.g. 2.5% is 25, commission sent to distant referrer
     function rewardReferrers(address referral, uint256 value, uint8 reward0, uint8 reward1) private {
-        address[] memory refs = referrersOf[referral];
-
-        if(refs.length == 1) {
-            payable(refs[0]).transfer(value * reward0 / 1000);
-        } else if (refs.length == 2) {
-            payable(refs[0]).transfer(value * reward0 / 1000);
-            payable(refs[1]).transfer(value * reward1 / 1000);
+        if(referrersOf[referral][0] != address(0) && referrersOf[referral][1] == address(0)) {
+            payable(referrersOf[referral][0]).transfer(value * reward0 / 1000);
+        } else if (referrersOf[referral][1] != address(0)) {
+            payable(referrersOf[referral][0]).transfer(value * reward0 / 1000);
+            payable(referrersOf[referral][1]).transfer(value * reward1 / 1000);
         }
     }
 
+    /// @notice determines if round has ended
+    /// @param roundType - round type used to determine what piece of state to modify 
+    /// @return true if round hs ended, false if it hasn't
     function hasRoundEnded(bytes32 roundType) private returns(bool){
         if(roundType == "trade" && block.timestamp >= tradeRounds[roundCount - 1].startedAt + ROUND_TIME) {
             tradeRounds[roundCount - 1].hasEnded = true; 
@@ -291,13 +304,32 @@ contract ACDMPlatform is Ownable, ReentrancyGuard {
         }
     }
 
+    /// @notice close sale round and burn unsold tokens
     function closeSaleRoundAndBurn() private {
         PlatformSaleRound memory previousSaleRound = saleRounds[roundCount - 1];
-
+        
         if(previousSaleRound.volumeAvailable - previousSaleRound.volumeTransacted > 0) {
-            saleRounds[roundCount - 1].hasEnded  = true;
             emit RoundEnded("Sale", previousSaleRound.price);
             TOKEN.call(abi.encodeWithSignature("burn(uint256)", previousSaleRound.volumeAvailable - previousSaleRound.volumeTransacted));
+        }
+
+        saleRounds[roundCount - 1].hasEnded  = true;
+    }
+
+    /// @notice get all orders existing within trade round 
+    /// @param id - round id
+    /// @return orders returns all existing orders assigned to round
+    function getOrdersByRoundId(uint256 id) external view onlyDuring("trade", 1) onlyOwner returns(UserTradeOrder[] memory orders) {
+        require(id > 0 && id < roundCount, "Incorrect id");
+        orders = tradeOrders[id];
+    }
+    
+    /// @notice assigns unredeemed existing orders to new round
+    /// @dev no other way to bind array to new map key
+    /// @param orders - orders from previous round that are supposed to be continued 
+    function transferOrdersToCurrentTradeRound(UserTradeOrder[] calldata orders) external onlyDuring("trade", 1) onlyOwner {
+        for (uint256 i = 0; i < orders.length; i++) {
+            tradeOrders[roundCount - 1].push(orders[i]);
         }
     }
 }

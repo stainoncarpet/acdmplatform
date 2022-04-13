@@ -1,3 +1,4 @@
+/* eslint-disable prettier/prettier */
 /* eslint-disable no-undef */
 /* eslint-disable no-unused-expressions */
 /* eslint-disable spaced-comment */
@@ -7,11 +8,49 @@
 /* eslint-disable import/no-duplicates */
 
 import { expect } from "chai";
+import { formatEther } from "ethers/lib/utils";
 import { ethers, network, waffle } from "hardhat";
 import { ACDMToken } from "../typechain";
 import { ACDMPlatform } from "../typechain";
 
 const parseEth = ethers.utils.parseEther;
+
+const ABI = [{
+  "inputs": [{
+    "internalType": "uint256",
+    "name": "id",
+    "type": "uint256"
+  }],
+  "name": "getOrdersByRoundId",
+  "outputs": [{
+    "type": "tuple[]",
+    "name": "orders",
+    "components": [
+      { "type": "address", "name": "creator" },
+      { "type": "uint256", "name": "volumeAvailable" },
+      { "type": "uint256", "name": "volumeTransacted" },
+      { "type": "uint256", "name": "price" }
+    ]
+  }],
+  "stateMutability": "view",
+  "type": "function"
+}, {
+  "inputs": [{
+    "type": "tuple[]",
+    "name": "orders",
+    "components": [
+      { "type": "address", "name": "creator" },
+      { "type": "uint256", "name": "volumeAvailable" },
+      { "type": "uint256", "name": "volumeTransacted" },
+      { "type": "uint256", "name": "price" }
+    ]
+  }],
+  "name": "transferOrdersToCurrentTradeRound",
+  "outputs": [] as any[],
+  "stateMutability": "nonpayable",
+  "type": "function"
+},
+];
 
 describe("ACDM", () => {
   let ACDMToken, acdmToken: ACDMToken, ACDMPlatform, acdmPlatform: ACDMPlatform;
@@ -45,6 +84,11 @@ describe("ACDM", () => {
     await acdmPlatform.connect(user2).register(user1.address);
     await acdmPlatform.connect(user3).register(user2.address);
 
+    // user2 tries to register user3 as referren when user2 is user3's referrer
+    await expect(acdmPlatform.connect(user2).register(user3.address))
+    .to.be.revertedWith("Already registered")
+    ;
+
     await acdmPlatform.connect(user4).register("0x0000000000000000000000000000000000000000");
     await expect(acdmPlatform.connect(user4).register(user1.address))
     .to.be.revertedWith("Already registered")
@@ -54,9 +98,9 @@ describe("ACDM", () => {
     expect(await acdmPlatform.isRegistered(user2.address)).to.be.equal(true);
     expect(await acdmPlatform.isRegistered(user3.address)).to.be.equal(true);
 
-    // referrer doesn't exist, accessing array with 0 items
-    await expect(acdmPlatform.referrersOf(user1.address, 0))
-    .to.be.reverted
+    // non-existant referrer should be default value for address type
+    expect(await acdmPlatform.referrersOf(user1.address, 0))
+    .to.be.equal("0x0000000000000000000000000000000000000000")
     ;
 
     expect(await acdmPlatform.referrersOf(user3.address, 0))
@@ -155,12 +199,10 @@ describe("ACDM", () => {
 
     // SALE ROUND 2
     await acdmPlatform.startSaleRound();
-
     await acdmPlatform.connect(user3).buyACDM({value: parseEth("10")});
 
     //TRADE ROUND 2
     await acdmPlatform.startTradeRound();
-    
     await acdmToken.connect(user3).approve(acdmPlatform.address, parseEth("50000"));
     
     // user3 adds sell order
@@ -341,6 +383,61 @@ describe("ACDM", () => {
     // user3 spent 2 eth, each referrer gets 2.5% of that, or 0.05 eth
     expect(referrer0BalanceAfter.sub(referrer0BalanceBefore)).to.be.equal(parseEth("0.05"));
     expect(referrer1BalanceAfter.sub(referrer1BalanceBefore)).to.be.equal(parseEth("0.05"));
+  });
+
+  it("Should", async () => {
+    await acdmPlatform.connect(user1).register("0x0000000000000000000000000000000000000000");
+    await acdmPlatform.connect(user2).register(user1.address);
+    await acdmPlatform.connect(user3).register(user2.address);
+
+    // SALE ROUND 1
+    await acdmPlatform.startSaleRound();
+    await acdmPlatform.connect(user1).buyACDM({value: parseEth("0.75")});
+    await acdmPlatform.connect(user2).buyACDM({value: parseEth("0.25")});
+
+    // TRADE ROUND 1
+    await acdmPlatform.startTradeRound();
+    await acdmToken.connect(user1).approve(acdmPlatform.address, parseEth("75000"));
+    await acdmPlatform.connect(user1).addOrder(parseEth("75000"), parseEth("0.00002"));
+    await acdmToken.connect(user2).approve(acdmPlatform.address, parseEth("25000"));
+    await acdmPlatform.connect(user2).addOrder(parseEth("25000"), parseEth("0.00002"));
+      
+    const iface = new ethers.utils.Interface(ABI)
+    const res = await acdmPlatform.getOrdersByRoundId(1);
+
+    // don't buy anything and start trade round 2
+
+    // fast forward 3+ days
+    await network.provider.request({ method: "evm_increaseTime", params: [90000] });
+    await network.provider.request({ method: "evm_mine", params: [] });
+
+    // SALE ROUND 2, should end right after start
+    await acdmPlatform.startSaleRound();
+
+    //TRADE ROUND 2
+    await acdmPlatform.startTradeRound();
+
+    // transfer orders from previous round
+    const ordersFromCurrentTradeRoundBefore = await acdmPlatform.getOrdersByRoundId(3);
+    const ordersFromPreviousTradeRound = await acdmPlatform.getOrdersByRoundId(1);
+    const untouchedOrders = [];
+    
+    for (let i = 0; i < ordersFromPreviousTradeRound.length; i++) {
+      if (parseFloat(ethers.utils.formatEther(ordersFromPreviousTradeRound[i].volumeTransacted)) === 0) {
+        untouchedOrders.push(ordersFromPreviousTradeRound[i]);
+      }
+    }
+
+    if (untouchedOrders.length > 0) {
+      await acdmPlatform.transferOrdersToCurrentTradeRound(untouchedOrders);
+    }
+
+    const ordersFromCurrentTradeRoundAfter = await acdmPlatform.getOrdersByRoundId(3);
+
+    // two untoched orders should be copied onto latest round
+    expect(ordersFromCurrentTradeRoundAfter.length - ordersFromCurrentTradeRoundBefore.length)
+    .to.be.equal(2)
+    ;
   });
 });
 
